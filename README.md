@@ -14,6 +14,14 @@
     <img src="https://img.shields.io/github/last-commit/Thibor/Unicorn?color=critical&style=for-the-badge">
 </div>
 
+Unicorn is a complete, FIDE-rules-compliant 2200 elo chess engine
+
 ## Features
 
-- board: piece[64]
+- Board: pieces[64]
+- En passant
+- Underpromotions (knight, bishop, rook)
+- 2-fold repetition detection
+- 50-move rule
+- Stalemate and checkmate reported correctly to the GUI
+
