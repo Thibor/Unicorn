@@ -4,7 +4,7 @@
 <img src="/Resources/Unicorn.png" />
     <br>
     <br>
-    <b><i>Single file small uci chess engine 1300 elo.</i></b>
+    <b><i>Single file small uci chess engine 2200 elo.</i></b>
     <br>
     <br>
     <img src="https://img.shields.io/github/downloads/Thibor/Unicorn/total?color=critical&style=for-the-badge">
@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/github/last-commit/Thibor/Unicorn?color=critical&style=for-the-badge">
 </div>
 
-Unicorn is a complete, FIDE-rules-compliant 2200 elo chess engine
+Unicorn is a complete, FIDE-rules-compliant chess engine
 
 ## Features
 

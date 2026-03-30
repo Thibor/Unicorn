@@ -4,7 +4,7 @@
 
 /.gitignore
 /.vs
-/Shark
+/Unicorn
 /x64/Debug
 /obj
 *.config
