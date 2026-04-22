@@ -14,14 +14,15 @@
     <img src="https://img.shields.io/github/last-commit/Thibor/Unicorn?color=critical&style=for-the-badge">
 </div>
 
-Unicorn is a complete, FIDE-rules-compliant chess engine
+FIDE-rules-compliant chess engine
 
 ## Features
 
+- Single file
 - Board: pieces[64]
 - En passant
 - Underpromotions (knight, bishop, rook)
-- 2-fold repetition detection
+- Threefold repetition
 - 50-move rule
 - Stalemate and checkmate reported correctly to the GUI
 

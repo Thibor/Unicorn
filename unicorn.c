@@ -5,6 +5,8 @@
 #define INF 32001
 #define MATE 32000
 #define MAX_PLY 64
+#define U8 unsigned __int8
+#define S16 signed __int16
 #define U16 unsigned __int16
 #define S32 signed __int32
 #define S64 signed __int64
@@ -24,6 +26,7 @@ enum Piece {
 	BLACK_PAWN = 16, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
 };
 enum Castling { CWK = 1, CWQ = 2, CBK = 4, CBQ = 8 };
+enum Bound { UPPER, LOWER, EXACT };
 enum Squares {
 	a8, b8, c8, d8, e8, f8, g8, h8,
 	a7, b7, c7, d7, e7, f7, g7, h7,
@@ -41,20 +44,20 @@ typedef struct {
 } D2;
 
 typedef struct {
-	int kingSq[2];
-	int board[64];
-	int color;
-	int ep;
-	int castle;
-	int move50;
+	U8 kingSq[2];
+	U8 board[64];
+	U8 color;
+	U8 ep;
+	U8 castle;
+	U8 move50;
 }Position;
 
 Position pos;
 
 typedef struct {
-	int from;
-	int to;
-	int promo;
+	U8 from;
+	U8 to;
+	U8 promo;
 }Move;
 
 typedef struct {
@@ -62,16 +65,17 @@ typedef struct {
 } Stack;
 
 typedef struct {
-	U64 key;
+	U64 hash;
 	Move move;
-	int score;
+	S16 score;
 	int depth;
-	U16 flag;
-}TT_Entry;
+	U8 flag;
+}TTEntry;
 
 typedef struct {
-	int stop;
-	int depthLimit;
+	U8 post;
+	U8 stop;
+	U8 depthLimit;
 	U64 timeStart;
 	U64 timeLimit;
 	U64 nodes;
@@ -91,6 +95,8 @@ Stack stack[MAX_PLY];
 int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
 int eg_value[6] = { 94, 281, 297, 512,  936,  0 };
 int max_value[6] = { 94, 337, 365, 477, 1025, 0 };
+const U64 tt_count = 64ULL << 15;
+TTEntry tt[64ULL << 15];
 
 int boardCastle[64] = {
 	 7, 15, 15, 15,  3, 15, 15, 11,
@@ -270,7 +276,7 @@ static void InitEval() {
 	}
 }
 
-static U64 GetTimeMs() {
+static inline U64 GetTimeMs() {
 	return (U64)GetTickCount64();
 }
 
@@ -283,14 +289,32 @@ static inline int GetPieceColor(int piece) {
 }
 
 static inline int GetPieceType(int piece) {
+	if(piece==EMPTY)
+		return PT_NB;
 	return piece & 7;
 }
 
+static inline int FileOf(int sq) {
+	return sq % 8;
+}
+
+static inline int RankOf(int sq) {
+	return sq / 8;
+}
+
+static inline char CFileOf(int sq) {
+	return 'a' + FileOf(sq);
+}
+
+static inline char CRankOf(int sq) {
+	return '1' + (7 - RankOf(sq));
+}
+
 static int Distance(int sq1, int sq2) {
-	int x1 = sq1 % 8;
-	int y1 = sq1 / 8;
-	int x2 = sq2 % 8;
-	int y2 = sq2 / 8;
+	int x1 = FileOf(sq1);
+	int y1 = RankOf(sq1);
+	int x2 = FileOf(sq2);
+	int y2 = RankOf(sq2);
 	return max(abs(x1 - x2), abs(y1 - y2));
 }
 
@@ -315,10 +339,10 @@ static char* ParseToken(char* string, char* token) {
 
 static char* MoveToUci(Move move) {
 	static char str[6] = { 0 };
-	str[0] = 'a' + (move.from % 8);
-	str[1] = '1' + (7 - move.from / 8);
-	str[2] = 'a' + (move.to % 8);
-	str[3] = '1' + (7 - move.to / 8);
+	str[0] = CFileOf(move.from);
+	str[1] = CRankOf(move.from);
+	str[2] = CFileOf(move.to);
+	str[3] = CRankOf(move.to);
 	str[4] = "\0nbrq\0\0"[move.promo];
 	return str;
 }
@@ -388,6 +412,39 @@ static int IsRepetition(Position* pos, U64 hash) {
 	return FALSE;
 }
 
+static int IsPseudolegalMove(const Position* pos, const Move move) {
+	Move moves[256];
+	const int num_moves = MoveGen(pos, moves, 0);
+	for (int i = 0; i < num_moves; ++i)
+		if (moves[i].from == move.from && moves[i].to == move.to)
+			return 1;
+	return 0;
+}
+
+static void PrintPv(const Position* pos, const Move move) {
+	if (!IsPseudolegalMove(pos, move))
+		return;
+	const Position npos = *pos;
+	if (!MakeMove(&npos, &move))
+		return;
+	printf(" %s", MoveToUci(move));
+	const U64 hash = GetHash(&npos);
+	TTEntry* tt_entry = tt + (hash % tt_count);
+	if (tt_entry->hash != hash || IsRepetition(pos,hash))
+		return;
+	historyHash[historyCount++] = hash;
+	PrintPv(&npos, tt_entry->move);
+	historyCount--;
+}
+
+static int Permill() {
+	int pm = 0;
+	for (int n = 0; n < 1000; n++)
+		if (tt[n].hash)
+			pm++;
+	return pm;
+}
+
 static int EvalPosition(Position* pos) {
 	int scoreMg = 0;
 	int scoreEg = 0;
@@ -440,7 +497,7 @@ static void SetFen(Position* pos, char* fen) {
 		case 'b': pos->board[sq++] = BLACK_BISHOP; break;
 		case 'r': pos->board[sq++] = BLACK_ROOK; break;
 		case 'q': pos->board[sq++] = BLACK_QUEEN; break;
-		case 'k':  pos->kingSq[1] = sq; pos->board[sq++] = BLACK_KING; break;
+		case 'k': pos->kingSq[1] = sq; pos->board[sq++] = BLACK_KING; break;
 		}
 		fen++;
 	}
@@ -581,16 +638,47 @@ static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures) {
 	return num_moves;
 }
 
-static void PrintInfo(int depth, int score) {
+static void PrintBoard(Position* pos) {
+	const char* s = "   +---+---+---+---+---+---+---+---+\n";
+	const char* t = "     A   B   C   D   E   F   G   H\n";
+	printf(t);
+	for (int r = 0; r<8; r++) {
+		printf(s);
+		printf(" %d |", r + 1);
+		for (int f = 0; f < 8; f++) {
+			int sq = r * 8 + f;
+			int piece = pos->board[sq];
+			int pt = GetPieceType(piece);
+			int color = GetPieceColor(piece);
+			if (color==WHITE)
+				printf(" %c |", "ANBRQK "[pt]);
+			else
+				printf(" %c |", "anbrqk "[pt]);
+		}
+		printf(" %d \n", r + 1);
+	}
+	printf(s);
+	printf(t);
+	char castling[5] = "KQkq";
+	for (int n = 0; n < 4; n++)
+		if (!pos->castle & 1<<n)
+			castling[n] = '-';
+	printf("side     : %16s\n", pos->color==WHITE ? "white": "black");
+	printf("castling : %16s\n", castling);
+	printf("hash     : %16llx\n", GetHash(pos));
+}
+
+static void PrintInfo(Position* pos, int depth, int score) {
 	printf("info depth %d score ", depth);
 	if (abs(score) < MATE - MAX_PLY)
 		printf("cp %d", score);
 	else
 		printf("mate %d", (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1));
 	printf(" time %lld", GetTimeMs() - info.timeStart);
-	printf(" nodes %lld pv %s", info.nodes, MoveToUci(stack[0].move));
+	printf(" nodes %lld", info.nodes);
+	printf(" hashfull %d pv", Permill());
+	PrintPv(pos, stack[0].move);
 	printf("\n");
-	fflush(stdout);
 }
 
 static int Center(int rank, int file) {
@@ -642,7 +730,8 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	if (ply >= MAX_PLY)
 		return static_eval;
 	const int inCheck = IsSquareAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
-	if (inCheck)depth = max(1, depth + 1);
+	if (inCheck)
+		depth = max(1, depth + 1);
 	int in_qsearch = depth < 1;
 	if (in_qsearch && alpha < static_eval) {
 		alpha = static_eval;
@@ -653,13 +742,26 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	if (ply && !in_qsearch)
 		if (pos->move50 >= 100 || IsRepetition(pos, hash))
 			return 0;
+	TTEntry* tt_entry = tt + (hash % tt_count);
+	Move tt_move = { 0 };
+	if (tt_entry->hash == hash) {
+		tt_move = tt_entry->move;
+		if (alpha == beta - 1 && tt_entry->depth >= depth) {
+			if (tt_entry->flag == EXACT)return tt_entry->score;
+			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)return tt_entry->score;
+			if (tt_entry->flag == UPPER && tt_entry->score >= beta)return tt_entry->score;
+		}
+	}
+	else
+		depth -= depth > 3;
 	historyHash[historyCount++] = hash;
+	U8 tt_flag = LOWER;
 	int legalMoves = 0;
 	Move moves[256];
 	int scoreList[256];
 	const int num_moves = MoveGen(pos, moves, in_qsearch);
 	for (int n = 0; n < num_moves; n++)
-		scoreList[n] = EvalMove(pos, &stack[ply].move, &moves[n]);
+		scoreList[n] = EvalMove(pos, &tt_move, &moves[n]);
 	for (int n = 0; n < num_moves; n++) {
 		Move move = PickMove(pos, moves, scoreList, num_moves, n);
 		Position npos = *pos;
@@ -672,15 +774,23 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 		if (alpha < score) {
 			alpha = score;
 			stack[ply].move = move;
-			if (!ply)
-				PrintInfo(depth, score);
-			if (alpha >= beta)
+			tt_flag = EXACT;
+			if (!ply && info.post)
+				PrintInfo(pos, depth, score);
+			if (alpha >= beta) {
+				tt_flag = UPPER;
 				break;
+			}
 		}
 	}
 	historyCount--;
 	if (!legalMoves && !in_qsearch)
 		return inCheck ? ply - MATE : 0;
+	tt_entry->hash = hash;
+	tt_entry->move = stack[ply].move;
+	tt_entry->depth = depth;
+	tt_entry->score = alpha;
+	tt_entry->flag = tt_flag;
 	return alpha;
 }
 
@@ -816,6 +926,7 @@ static void ParsePosition(char* ptr) {
 }
 
 static void ParseGo(char* command) {
+	info.post = TRUE;
 	info.stop = FALSE;
 	info.nodes = 0;
 	info.depthLimit = MAX_PLY;
@@ -865,6 +976,8 @@ static void UciCommand(char* line) {
 		ParseGo(line + 2);
 	else if (!strncmp(line, "position", 8))
 		ParsePosition(line + 8);
+	else if (!strncmp(line, "print", 5))
+		PrintBoard(&pos);
 	else if (!strncmp(line, "exit", 4))
 		exit(0);
 }
