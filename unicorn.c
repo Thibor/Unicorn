@@ -91,6 +91,7 @@ D2 dirOffset[16] = { {1,1},{-1,1},{-1,-1},{1,-1},{1,0},{-1,0},{0,1},{0,-1},{1,2}
 int dirStart[PT_NB] = { 0,8,0,4,0,0 };
 int dirCount[PT_NB] = { 0,8,4,4,8,8 };
 int dirSlide[PT_NB] = { 0,0,1,1,1,0 };
+int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
 U64 keys[KEYS_COUNT];
 Stack stack[MAX_PLY];
 int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
@@ -264,7 +265,15 @@ int mg_pst[12][64];
 int eg_pst[12][64];
 int max_pst[12][64];
 
-static void InitEval() {
+static U64 Rand64() {
+	static U64 next = 1;
+	next = next * 12345104729 + 104723;
+	return next;
+}
+
+static void Init() {
+	for (int i = 0; i < KEYS_COUNT; ++i)
+		keys[i] = Rand64();
 	for (int pt = PAWN; pt <= KING; pt++) {
 		for (int sq = 0; sq < 64; sq++) {
 			int mg = mg_value[pt] + mg_table[pt][sq];
@@ -377,17 +386,6 @@ static Move UciToMove(char* s) {
 	return m;
 }
 
-static U64 Rand64() {
-	static U64 next = 1;
-	next = next * 12345104729 + 104723;
-	return next;
-}
-
-static void InitHash() {
-	for (int i = 0; i < KEYS_COUNT; ++i)
-		keys[i] = Rand64();
-}
-
 static U64 GetHash(const Position* pos) {
 	U64 hash = pos->color;
 	for (int sq = 0; sq < 64; sq++) {
@@ -450,13 +448,12 @@ static int EvalPosition(Position* pos) {
 	int scoreMg = 0;
 	int scoreEg = 0;
 	int phase = 0;
-	int phases[PT_NB] = { 0, 1, 1, 2, 4, 0 };
 	for (int sq = 0; sq < 64; ++sq) {
 		int piece = pos->board[sq];
 		if (piece != EMPTY) {
 			int pt = GetPieceType(piece);
 			int color = GetPieceColor(piece);
-			phase += phases[pt];
+			phase += phaseVal[pt];
 			if (color == WHITE) {
 				scoreMg += mg_pst[pt][sq];
 				scoreEg += eg_pst[pt][sq];
@@ -637,7 +634,7 @@ static void PrintBoard(Position* pos) {
 	printf(t);
 	for (int r = 0; r < 8; r++) {
 		printf(s);
-		printf(" %d |", r + 1);
+		printf(" %d |", 8- r);
 		for (int f = 0; f < 8; f++) {
 			int sq = r * 8 + f;
 			int piece = pos->board[sq];
@@ -648,7 +645,7 @@ static void PrintBoard(Position* pos) {
 			else
 				printf(" %c |", "anbrqk "[pt]);
 		}
-		printf(" %d \n", r + 1);
+		printf(" %d \n", 8 - r);
 	}
 	printf(s);
 	printf(t);
@@ -941,7 +938,6 @@ static void PrintSummary(U64 time, U64 nodes) {
 	const char* units[] = { "", "k", "m", "g" };
 	int sn = ShrinkNumber(nps);
 	int p = pow(10, sn * 3);
-	int b = pow(10, 3);
 	printf("-----------------------------\n");
 	printf("Time        : %llu\n", time);
 	printf("Nodes       : %llu\n", nodes);
@@ -1072,7 +1068,8 @@ static void ParseGo(char* command) {
 }
 
 static void UciCommand(char* line) {
-	if (strncmp(line, "ucinewgame", 10) == 0) {}
+	if (strncmp(line, "ucinewgame", 10) == 0)
+		memset(tt, 0, sizeof(tt));
 	else if (!strncmp(line, "uci", 3)) {
 		printf("id name %s\nuciok\n", NAME);
 		fflush(stdout);
@@ -1096,16 +1093,13 @@ static void UciCommand(char* line) {
 }
 
 static void UciLoop() {
-	//UciCommand("position startpos moves d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 d1c2 d7d5 c4d5 e6d5 c1g5 e8g8 e2e3 h7h6 g5f4 b8c6 g1f3 b4c3 b2c3 c8e6 e1c1 g7g5 f4g3 g5g4 f3e5 c6e5 g3e5 a8c8 f1d3 c7c5 d4c5 c8c5 h1e1 c5c8 a2a4 f8e8 e3e4 f6e4 d3e4 d8g5 f2f4 g4f3");
-	//UciCommand("go movetime 1000");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
 		UciCommand(line);
 }
 
 int main(const int argc, const char** argv) {
-	InitEval();
-	InitHash();
+	Init();
 	printf("%s %s\n", NAME, VERSION);
 	SetFen(&pos, START_FEN);
 	UciLoop();
