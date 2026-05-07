@@ -92,11 +92,12 @@ int dirStart[PT_NB] = { 0,8,0,4,0,0 };
 int dirCount[PT_NB] = { 0,8,4,4,8,8 };
 int dirSlide[PT_NB] = { 0,0,1,1,1,0 };
 int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
+int insufVal[PT_NB] = { 3,1,2,3,3,0 };
 U64 keys[KEYS_COUNT];
 Stack stack[MAX_PLY];
 int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
 int eg_value[6] = { 94, 281, 297, 512,  936,  0 };
-int max_value[6] = { 94, 337, 365, 477, 1025, 0 };
+int mx_material[6] = { 94, 337, 365, 477, 1025, 0 };
 const U64 tt_count = 64ULL << 15;
 TTEntry tt[64ULL << 15];
 
@@ -261,9 +262,9 @@ int* eg_table[6] = {
 	eg_king_table
 };
 
-int mg_pst[12][64];
-int eg_pst[12][64];
-int max_pst[12][64];
+int mg_pst[16][64];
+int eg_pst[16][64];
+int mx_pst[16][64];
 
 static U64 Rand64() {
 	static U64 next = 1;
@@ -278,9 +279,12 @@ static void Init() {
 		for (int sq = 0; sq < 64; sq++) {
 			int mg = mg_value[pt] + mg_table[pt][sq];
 			int eg = eg_value[pt] + eg_table[pt][sq];
-			mg_pst[pt][sq] = mg_pst[pt + PT_NB][FLIP(sq)] = mg;
-			eg_pst[pt][sq] = eg_pst[pt + PT_NB][FLIP(sq)] = eg;
-			max_pst[pt][sq] = max_pst[pt + PT_NB][FLIP(sq)] = max(mg, eg);
+			mg_pst[pt + WHITE][sq] = mg;
+			mg_pst[pt][FLIP(sq)] = -mg;
+			eg_pst[pt + WHITE][sq] = eg;
+			eg_pst[pt][FLIP(sq)] = -eg;
+			mx_pst[pt + WHITE][sq] = max(mg, eg);
+			mx_pst[pt][FLIP(sq)] = max(mg, eg);
 		}
 	}
 }
@@ -297,7 +301,7 @@ static inline int GetPieceColor(int piece) {
 	return piece & COLOR_MASK;
 }
 
-static inline int GetPieceType(int piece) {
+static int GetPieceType(int piece) {
 	if (piece == EMPTY)
 		return PT_NB;
 	return piece & 7;
@@ -317,6 +321,10 @@ static inline char CFileOf(int sq) {
 
 static inline char CRankOf(int sq) {
 	return '1' + (7 - RankOf(sq));
+}
+
+static inline int PieceTypeOn(const Position* pos, int sq) {
+	return GetPieceType(pos->board[sq]);
 }
 
 static int Distance(int sq1, int sq2) {
@@ -401,12 +409,10 @@ static U64 GetHash(const Position* pos) {
 }
 
 static int IsRepetition(Position* pos, U64 hash) {
-	for (int n = historyCount - 4; n >= historyCount - pos->move50; n -= 2) {
-		if (n < 0)
-			return FALSE;
+	int limit = max(0, historyCount - pos->move50);
+	for (int n = historyCount - 4; n >= limit; n -= 2)
 		if (historyHash[n] == hash)
 			return TRUE;
-	}
 	return FALSE;
 }
 
@@ -448,22 +454,20 @@ static int EvalPosition(Position* pos) {
 	int scoreMg = 0;
 	int scoreEg = 0;
 	int phase = 0;
+	int insufficent[2] = { 0 };
 	for (int sq = 0; sq < 64; ++sq) {
 		int piece = pos->board[sq];
-		if (piece != EMPTY) {
-			int pt = GetPieceType(piece);
-			int color = GetPieceColor(piece);
-			phase += phaseVal[pt];
-			if (color == WHITE) {
-				scoreMg += mg_pst[pt][sq];
-				scoreEg += eg_pst[pt][sq];
-			}
-			else {
-				scoreMg -= mg_pst[pt + PT_NB][sq];
-				scoreEg -= eg_pst[pt + PT_NB][sq];
-			}
-		}
+		if (piece == EMPTY)continue;
+		int pt = GetPieceType(piece);
+		int c = GetPieceColor(piece) == BLACK;
+		int pc = piece & 0xf;
+		phase += phaseVal[pt];
+		insufficent[c] += insufVal[pt];
+		scoreMg += mg_pst[pc][sq];
+		scoreEg += eg_pst[pc][sq];
 	}
+	if (max(insufficent[0], insufficent[1]) < 3)
+		return 0;
 	if (phase > 24) phase = 24;
 	int score = (scoreMg * phase + scoreEg * (24 - phase)) / 24;
 	score = (score * (100 - pos->move50)) / 100;
@@ -584,7 +588,7 @@ static void GeneratePieceMoves(Position* pos, Move* const moveList, int* num_mov
 	}
 }
 
-static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures,int inCheck) {
+static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures, int inCheck) {
 	int num_moves = 0;
 	for (int y = 0; y < 8; y++)
 		for (int x = 0; x < 8; x++) {
@@ -607,20 +611,20 @@ static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures,int inC
 				if (!onlyCaptures && !inCheck) {
 					if (pos->castle & CWK)
 						if (pos->board[f1] == EMPTY && pos->board[g1] == EMPTY && !IsSquareAttacked(pos, f1, BLACK))
-								AddMove(moveList, &num_moves, e1, g1, PT_NB);
+							AddMove(moveList, &num_moves, e1, g1, PT_NB);
 					if (pos->castle & CWQ)
 						if (pos->board[d1] == EMPTY && pos->board[b1] == EMPTY && pos->board[c1] == EMPTY && !IsSquareAttacked(pos, d1, BLACK))
-								AddMove(moveList, &num_moves, e1, c1, PT_NB);
+							AddMove(moveList, &num_moves, e1, c1, PT_NB);
 				}
 				break;
 			case BLACK_KING:
 				if (!onlyCaptures && !inCheck) {
 					if (pos->castle & CBK)
 						if (pos->board[f8] == EMPTY && pos->board[g8] == EMPTY && !IsSquareAttacked(pos, f8, WHITE))
-								AddMove(moveList, &num_moves, e8, g8, PT_NB);
+							AddMove(moveList, &num_moves, e8, g8, PT_NB);
 					if (pos->castle & CBQ)
 						if (pos->board[d8] == EMPTY && pos->board[b8] == EMPTY && pos->board[c8] == EMPTY && !IsSquareAttacked(pos, d8, WHITE))
-								AddMove(moveList, &num_moves, e8, c8, PT_NB);
+							AddMove(moveList, &num_moves, e8, c8, PT_NB);
 				}
 				break;
 			}//case
@@ -634,7 +638,7 @@ static void PrintBoard(Position* pos) {
 	printf(t);
 	for (int r = 0; r < 8; r++) {
 		printf(s);
-		printf(" %d |", 8- r);
+		printf(" %d |", 8 - r);
 		for (int f = 0; f < 8; f++) {
 			int sq = r * 8 + f;
 			int piece = pos->board[sq];
@@ -686,14 +690,14 @@ static int EvalMove(Position* pos, Move* bst, Move* m) {
 	int pDes = pos->board[m->to];
 	int ptSou = GetPieceType(pSou);
 	int ptDes = GetPieceType(pDes);
-	int piece = pos->color == WHITE ? ptSou : ptSou + PT_NB;
-	int score = max_pst[piece][m->to] - max_pst[piece][m->from];
+	int pc = pSou & 0xf;
+	int score = mx_pst[pc][m->to] - mx_pst[pc][m->from];
 	if ((m->from == bst->from) && (m->to == bst->to))
 		score += 10000;
 	if (m->promo < PT_NB)
-		score += max_value[m->promo] - max_value[PAWN];
+		score += mx_material[m->promo] - mx_material[PAWN];
 	if (pDes)
-		score += 10 * max_value[ptDes] - max_value[ptSou];
+		score += 10 * mx_material[ptDes] - mx_material[ptSou];
 	return score;
 }
 
@@ -730,7 +734,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	if (inCheck)
 		depth = max(1, depth + 1);
 	int inQuiescence = depth < 1;
-	if (inQuiescence && alpha < static_eval) {
+	if (inQuiescence&& alpha < static_eval) {
 		alpha = static_eval;
 		if (alpha >= beta)
 			return beta;
@@ -757,7 +761,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	int score;
 	Move moves[256];
 	int scoreList[256];
-	const int num_moves = MoveGen(pos, moves, inQuiescence,inCheck);
+	const int num_moves = MoveGen(pos, moves, inQuiescence, inCheck);
 	for (int n = 0; n < num_moves; n++)
 		scoreList[n] = EvalMove(pos, &tt_move, &moves[n]);
 	for (int n = 0; n < num_moves; n++) {
@@ -765,10 +769,10 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		if (!legalMoves)
+		if (!legalMoves || depth < 4)
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1);
 		else {
-			int r = legalMoves >> 2;
+			int r = legalMoves / 13 + depth / 14;
 			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1);
@@ -1027,11 +1031,13 @@ static void ParsePosition(char* ptr) {
 	historyCount = 0;
 	if (strcmp(token, "moves") == 0)
 		while (1) {
-			historyHash[historyCount++] = GetHash(&pos);
 			ptr = ParseToken(ptr, token);
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token);
+			if (PieceTypeOn(&pos, m.to) != PT_NB || PieceTypeOn(&pos, m.from) == PAWN)
+				historyCount = 0;
+			historyHash[historyCount++] = GetHash(&pos);
 			MakeMove(&pos, &m);
 		}
 }
