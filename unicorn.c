@@ -19,12 +19,11 @@
 #define START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 #define FLIP(sq) ((sq)^56)
 
-enum Color { WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
+enum Color { EMPTY = 0, WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
 enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PT_NB };
 enum Piece {
-	EMPTY,
-	WHITE_PAWN = 8, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
-	BLACK_PAWN = 16, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
+	WHITE_PAWN = WHITE, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
+	BLACK_PAWN = BLACK, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
 };
 enum Castling { CWK = 1, CWQ = 2, CBK = 4, CBQ = 8 };
 enum Bound { UPPER, LOWER, EXACT };
@@ -36,7 +35,7 @@ enum Squares {
 	a4, b4, c4, d4, e4, f4, g4, h4,
 	a3, b3, c3, d3, e3, f3, g3, h3,
 	a2, b2, c2, d2, e2, f2, g2, h2,
-	a1, b1, c1, d1, e1, f1, g1, h1, no_sq
+	a1, b1, c1, d1, e1, f1, g1, h1, SQ_NB
 };
 
 typedef struct {
@@ -52,8 +51,6 @@ typedef struct {
 	U8 castle;
 	U8 move50;
 }Position;
-
-Position pos;
 
 typedef struct {
 	U8 from;
@@ -83,8 +80,6 @@ typedef struct {
 	U64 nodesLimit;
 }SearchInfo;
 
-SearchInfo info;
-
 int historyCount = 0;
 U64 historyHash[1024];
 D2 dirOffset[16] = { {1,1},{-1,1},{-1,-1},{1,-1},{1,0},{-1,0},{0,1},{0,-1},{1,2},{2,1},{-1,2},{-2,1},{-1,-2},{-2,-1},{1,-2},{2,-1} };
@@ -93,13 +88,15 @@ int dirCount[PT_NB] = { 0,8,4,4,8,8 };
 int dirSlide[PT_NB] = { 0,0,1,1,1,0 };
 int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
 int insufVal[PT_NB] = { 3,1,2,3,3,0 };
-U64 keys[KEYS_COUNT];
-Stack stack[MAX_PLY];
-int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
-int eg_value[6] = { 94, 281, 297, 512,  936,  0 };
+int mg_material[6] = { 82, 337, 365, 477, 1025, 0 };
+int eg_material[6] = { 94, 281, 297, 512,  936, 0 };
 int mx_material[6] = { 94, 337, 365, 477, 1025, 0 };
 const U64 tt_count = 64ULL << 15;
+U64 keys[KEYS_COUNT];
+Stack stack[MAX_PLY];
 TTEntry tt[64ULL << 15];
+SearchInfo info;
+Position pos;
 
 int boardCastle[64] = {
 	 7, 15, 15, 15,  3, 15, 15, 11,
@@ -277,8 +274,8 @@ static void Init() {
 		keys[i] = Rand64();
 	for (int pt = PAWN; pt <= KING; pt++) {
 		for (int sq = 0; sq < 64; sq++) {
-			int mg = mg_value[pt] + mg_table[pt][sq];
-			int eg = eg_value[pt] + eg_table[pt][sq];
+			int mg = mg_material[pt] + mg_table[pt][sq];
+			int eg = eg_material[pt] + eg_table[pt][sq];
 			mg_pst[pt + WHITE][sq] = mg;
 			mg_pst[pt][FLIP(sq)] = -mg;
 			eg_pst[pt + WHITE][sq] = eg;
@@ -323,7 +320,7 @@ static inline char CRankOf(int sq) {
 	return '1' + (7 - RankOf(sq));
 }
 
-static inline int PieceTypeOn(const Position* pos, int sq) {
+static inline int PieceTypeOnSquare(const Position* pos, int sq) {
 	return GetPieceType(pos->board[sq]);
 }
 
@@ -401,7 +398,7 @@ static U64 GetHash(const Position* pos) {
 		if (piece)
 			hash ^= keys[(piece & 0xf) * 64 + sq];
 	}
-	if (pos->ep < no_sq)
+	if (pos->ep < SQ_NB)
 		hash ^= keys[6 * 64 + pos->ep];
 	if (pos->castle)
 		hash ^= keys[7 * 64 + pos->castle];
@@ -455,14 +452,14 @@ static int EvalPosition(Position* pos) {
 	int scoreEg = 0;
 	int phase = 0;
 	int insufficent[2] = { 0 };
-	for (int sq = 0; sq < 64; ++sq) {
+	for (int sq = 0; sq < SQ_NB; ++sq) {
 		int piece = pos->board[sq];
 		if (piece == EMPTY)continue;
 		int pt = GetPieceType(piece);
-		int c = GetPieceColor(piece) == BLACK;
+		int color = GetPieceColor(piece);
 		int pc = piece & 0xf;
 		phase += phaseVal[pt];
-		insufficent[c] += insufVal[pt];
+		insufficent[color == BLACK] += insufVal[pt];
 		scoreMg += mg_pst[pc][sq];
 		scoreEg += eg_pst[pc][sq];
 	}
@@ -476,7 +473,7 @@ static int EvalPosition(Position* pos) {
 
 static void SetFen(Position* pos, char* fen) {
 	memset(pos, 0, sizeof(Position));
-	pos->ep = no_sq;
+	pos->ep = SQ_NB;
 	int sq = 0;
 	while (*fen && *fen != ' ') {
 		switch (*fen) {
@@ -675,16 +672,6 @@ static void PrintInfo(Position* pos, int depth, int score) {
 	printf("\n");
 }
 
-static int Center(int rank, int file) {
-	return -abs(rank * 2 - 7) / 2 - abs(file * 2 - 7) / 2;
-}
-
-static int CenterSq(int sq) {
-	int rank = sq / 8;
-	int file = sq % 8;
-	return Center(rank, file);
-}
-
 static int EvalMove(Position* pos, Move* bst, Move* m) {
 	int pSou = pos->board[m->from];
 	int pDes = pos->board[m->to];
@@ -697,7 +684,7 @@ static int EvalMove(Position* pos, Move* bst, Move* m) {
 	if (m->promo < PT_NB)
 		score += mx_material[m->promo] - mx_material[PAWN];
 	if (pDes)
-		score += 10 * mx_material[ptDes] - mx_material[ptSou];
+		score += mx_material[ptDes] - mx_material[ptSou] / 10;
 	return score;
 }
 
@@ -734,7 +721,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	if (inCheck)
 		depth = max(1, depth + 1);
 	int inQuiescence = depth < 1;
-	if (inQuiescence&& alpha < static_eval) {
+	if (inQuiescence && alpha < static_eval) {
 		alpha = static_eval;
 		if (alpha >= beta)
 			return beta;
@@ -745,9 +732,10 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 			return 0;
 	TTEntry* tt_entry = tt + (hash % tt_count);
 	Move tt_move = { 0 };
+	int inPv = beta - alpha > 1;
 	if (tt_entry->hash == hash) {
 		tt_move = tt_entry->move;
-		if (alpha == beta - 1 && tt_entry->depth >= depth) {
+		if (!inPv && tt_entry->depth >= depth) {
 			if (tt_entry->flag == EXACT)return tt_entry->score;
 			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)return tt_entry->score;
 			if (tt_entry->flag == UPPER && tt_entry->score >= beta)return tt_entry->score;
@@ -772,7 +760,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 		if (!legalMoves || depth < 4)
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1);
 		else {
-			int r = legalMoves / 13 + depth / 14;
+			int r = !inPv;
 			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1);
@@ -806,24 +794,25 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 }
 
 static void SearchIteratively(Position* pos) {
+	memset(tt, 0, sizeof(tt));
 	int score = 0;
 	int alpha = -MATE;
 	int beta = MATE;
 	for (int depth = 1; depth <= info.depthLimit; ++depth) {
-		int asphigh = 16, asplow = 16;
+		int aspH = 16, aspL = 16;
 		do {
 			if (depth > 4) {
-				alpha = score - asplow;
-				beta = score + asphigh;
+				alpha = score - aspL;
+				beta = score + aspH;
 			}
 			score = SearchAlpha(pos, alpha, beta, depth, 0);
 			if (score <= alpha) {
-				alpha -= asplow;
-				asplow *= 2;
+				alpha -= aspL;
+				aspL *= 2;
 			}
 			else if (score >= beta) {
-				beta += asphigh;
-				asphigh *= 2;
+				beta += aspH;
+				aspH *= 2;
 			}
 			else
 				break;
@@ -884,7 +873,7 @@ static void MovePiece(Position* pos, int from, int to) {
 
 static int MakeMove(Position* pos, const Move* move) {
 	int ep = pos->ep;
-	pos->ep = no_sq;
+	pos->ep = SQ_NB;
 	if (pos->board[move->to])
 		pos->move50 = 0;
 	else
@@ -911,10 +900,7 @@ static int MakeMove(Position* pos, const Move* move) {
 	int pt = GetPieceType(piece);
 	if (pt == PAWN) {
 		if (move->to == ep)
-			if (pos->color == WHITE)
-				pos->board[move->to + 8] = EMPTY;
-			else
-				pos->board[move->to - 8] = EMPTY;
+			pos->board[move->to + (pos->color == WHITE ? 8 : -8)] = EMPTY;
 		if (abs(move->from - move->to) == 16)
 			pos->ep = (move->from + move->to) / 2;
 		pos->move50 = 0;
@@ -1035,7 +1021,7 @@ static void ParsePosition(char* ptr) {
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token);
-			if (PieceTypeOn(&pos, m.to) != PT_NB || PieceTypeOn(&pos, m.from) == PAWN)
+			if (PieceTypeOnSquare(&pos, m.to) != PT_NB || PieceTypeOnSquare(&pos, m.from) == PAWN)
 				historyCount = 0;
 			historyHash[historyCount++] = GetHash(&pos);
 			MakeMove(&pos, &m);
