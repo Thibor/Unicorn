@@ -9,11 +9,13 @@
 
 #define MATE 32000
 #define MAX_PLY 64
+#define MAX_MOVE 256
 #define KEYS_COUNT 896
 #define U8 unsigned __int8
 #define S16 signed __int16
 #define U16 unsigned __int16
 #define S32 signed __int32
+#define U32 unsigned __int32
 #define S64 signed __int64
 #define U64 unsigned __int64
 #define FALSE 0
@@ -21,25 +23,28 @@
 #define NAME "Unicorn"
 #define VERSION "2026-03-24"
 #define START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-#define FLIP(sq) ((sq)^0x38)
+#define FLIP_SQ(sq) ((sq)^0x38)
 
 enum Color { EMPTY = 0, WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
 enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PT_NB };
+enum File { FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H };
+enum Rank { RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 };
 enum Piece {
 	WHITE_PAWN = WHITE, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
 	BLACK_PAWN = BLACK, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
 };
 enum Castling { CWK = 1, CWQ = 2, CBK = 4, CBQ = 8 };
-enum Bound { UPPER, LOWER, EXACT };
+enum Bound { TT_LOWER, TT_UPPER, TT_EXACT };
 enum Squares {
-	a8, b8, c8, d8, e8, f8, g8, h8,
-	a7, b7, c7, d7, e7, f7, g7, h7,
-	a6, b6, c6, d6, e6, f6, g6, h6,
-	a5, b5, c5, d5, e5, f5, g5, h5,
-	a4, b4, c4, d4, e4, f4, g4, h4,
-	a3, b3, c3, d3, e3, f3, g3, h3,
-	a2, b2, c2, d2, e2, f2, g2, h2,
-	a1, b1, c1, d1, e1, f1, g1, h1, SQ_NB
+	SQ_A8, SQ_B8, SQ_C8, SQ_D8, SQ_E8, SQ_F8, SQ_G8, SQ_H8,
+	SQ_A7, SQ_B7, SQ_C7, SQ_D7, SQ_E7, SQ_F7, SQ_G7, SQ_H7,
+	SQ_A6, SQ_B6, SQ_C6, SQ_D6, SQ_E6, SQ_F6, SQ_G6, SQ_H6,
+	SQ_A5, SQ_B5, SQ_C5, SQ_D5, SQ_E5, SQ_F5, SQ_G5, SQ_H5,
+	SQ_A4, SQ_B4, SQ_C4, SQ_D4, SQ_E4, SQ_F4, SQ_G4, SQ_H4,
+	SQ_A3, SQ_B3, SQ_C3, SQ_D3, SQ_E3, SQ_F3, SQ_G3, SQ_H3,
+	SQ_A2, SQ_B2, SQ_C2, SQ_D2, SQ_E2, SQ_F2, SQ_G2, SQ_H2,
+	SQ_A1, SQ_B1, SQ_C1, SQ_D1, SQ_E1, SQ_F1, SQ_G1, SQ_H1,
+	SQ_NB
 };
 
 typedef struct {
@@ -56,18 +61,15 @@ typedef struct {
 	U8 move50;
 }Position;
 
-typedef struct {
-	U8 from;
-	U8 to;
-	U8 promo;
+typedef union {
+	U32 move;
+	struct {
+		U8 from;
+		U8 to;
+		U8 promo;
+		U8 flag;
+	};
 }Move;
-
-typedef struct {
-	S16 score;
-	Move move;
-	Move killer1;
-	Move killer2;
-} Stack;
 
 typedef struct {
 	U64 hash;
@@ -95,14 +97,16 @@ int dirStart[PT_NB] = { 0,8,0,4,0,0 };
 int dirCount[PT_NB] = { 0,8,4,4,8,8 };
 int dirSlide[PT_NB] = { 0,0,1,1,1,0 };
 int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
-int insufVal[PT_NB] = { 3,1,2,3,3,0 };
+int insufVal[PT_NB] = { 5,2,3,5,5,0 };
 int mg_material[PT_NB] = { 82, 337, 365, 477, 1025, 0 };
 int eg_material[PT_NB] = { 94, 281, 297, 512,  936, 0 };
-int mx_material[PT_NB] = { 94, 337, 365, 512, 1025, 0 };
 const U64 tt_count = 64ULL << 15;
 U64 keys[KEYS_COUNT];
 int hh[2][64][64];
-Stack ss[MAX_PLY];
+int mg_pst[16][SQ_NB];
+int eg_pst[16][SQ_NB];
+int mx_pst[16][SQ_NB];
+Move stack[MAX_PLY];
 TTEntry tt[64ULL << 15];
 SearchInfo info;
 Position pos;
@@ -118,164 +122,10 @@ int boardCastle[64] = {
 	13, 15, 15, 15, 12, 15, 15, 14
 };
 
-int mg_pawn_table[64] = {
-	  0,   0,   0,   0,   0,   0,  0,   0,
-	 98, 134,  61,  95,  68, 126, 34, -11,
-	 -6,   7,  26,  31,  65,  56, 25, -20,
-	-14,  13,   6,  21,  23,  12, 17, -23,
-	-27,  -2,  -5,  12,  17,   6, 10, -25,
-	-26,  -4,  -4, -10,   3,   3, 33, -12,
-	-35,  -1, -20, -23, -15,  24, 38, -22,
-	  0,   0,   0,   0,   0,   0,  0,   0,
-};
-
-int eg_pawn_table[64] = {
-	  0,   0,   0,   0,   0,   0,   0,   0,
-	178, 173, 158, 134, 147, 132, 165, 187,
-	 94, 100,  85,  67,  56,  53,  82,  84,
-	 32,  24,  13,   5,  -2,   4,  17,  17,
-	 13,   9,  -3,  -7,  -7,  -8,   3,  -1,
-	  4,   7,  -6,   1,   0,  -5,  -1,  -8,
-	 13,   8,   8,  10,  13,   0,   2,  -7,
-	  0,   0,   0,   0,   0,   0,   0,   0,
-};
-
-int mg_knight_table[64] = {
-	-167, -89, -34, -49,  61, -97, -15, -107,
-	 -73, -41,  72,  36,  23,  62,   7,  -17,
-	 -47,  60,  37,  65,  84, 129,  73,   44,
-	  -9,  17,  19,  53,  37,  69,  18,   22,
-	 -13,   4,  16,  13,  28,  19,  21,   -8,
-	 -23,  -9,  12,  10,  19,  17,  25,  -16,
-	 -29, -53, -12,  -3,  -1,  18, -14,  -19,
-	-105, -21, -58, -33, -17, -28, -19,  -23,
-};
-
-int eg_knight_table[64] = {
-	-58, -38, -13, -28, -31, -27, -63, -99,
-	-25,  -8, -25,  -2,  -9, -25, -24, -52,
-	-24, -20,  10,   9,  -1,  -9, -19, -41,
-	-17,   3,  22,  22,  22,  11,   8, -18,
-	-18,  -6,  16,  25,  16,  17,   4, -18,
-	-23,  -3,  -1,  15,  10,  -3, -20, -22,
-	-42, -20, -10,  -5,  -2, -20, -23, -44,
-	-29, -51, -23, -15, -22, -18, -50, -64,
-};
-
-int mg_bishop_table[64] = {
-	-29,   4, -82, -37, -25, -42,   7,  -8,
-	-26,  16, -18, -13,  30,  59,  18, -47,
-	-16,  37,  43,  40,  35,  50,  37,  -2,
-	 -4,   5,  19,  50,  37,  37,   7,  -2,
-	 -6,  13,  13,  26,  34,  12,  10,   4,
-	  0,  15,  15,  15,  14,  27,  18,  10,
-	  4,  15,  16,   0,   7,  21,  33,   1,
-	-33,  -3, -14, -21, -13, -12, -39, -21,
-};
-
-int eg_bishop_table[64] = {
-	-14, -21, -11,  -8, -7,  -9, -17, -24,
-	 -8,  -4,   7, -12, -3, -13,  -4, -14,
-	  2,  -8,   0,  -1, -2,   6,   0,   4,
-	 -3,   9,  12,   9, 14,  10,   3,   2,
-	 -6,   3,  13,  19,  7,  10,  -3,  -9,
-	-12,  -3,   8,  10, 13,   3,  -7, -15,
-	-14, -18,  -7,  -1,  4,  -9, -15, -27,
-	-23,  -9, -23,  -5, -9, -16,  -5, -17,
-};
-
-int mg_rook_table[64] = {
-	 32,  42,  32,  51, 63,  9,  31,  43,
-	 27,  32,  58,  62, 80, 67,  26,  44,
-	 -5,  19,  26,  36, 17, 45,  61,  16,
-	-24, -11,   7,  26, 24, 35,  -8, -20,
-	-36, -26, -12,  -1,  9, -7,   6, -23,
-	-45, -25, -16, -17,  3,  0,  -5, -33,
-	-44, -16, -20,  -9, -1, 11,  -6, -71,
-	-19, -13,   1,  17, 16,  7, -37, -26,
-};
-
-int eg_rook_table[64] = {
-	13, 10, 18, 15, 12,  12,   8,   5,
-	11, 13, 13, 11, -3,   3,   8,   3,
-	 7,  7,  7,  5,  4,  -3,  -5,  -3,
-	 4,  3, 13,  1,  2,   1,  -1,   2,
-	 3,  5,  8,  4, -5,  -6,  -8, -11,
-	-4,  0, -5, -1, -7, -12,  -8, -16,
-	-6, -6,  0,  2, -9,  -9, -11,  -3,
-	-9,  2,  3, -1, -5, -13,   4, -20,
-};
-
-int mg_queen_table[64] = {
-	-28,   0,  29,  12,  59,  44,  43,  45,
-	-24, -39,  -5,   1, -16,  57,  28,  54,
-	-13, -17,   7,   8,  29,  56,  47,  57,
-	-27, -27, -16, -16,  -1,  17,  -2,   1,
-	 -9, -26,  -9, -10,  -2,  -4,   3,  -3,
-	-14,   2, -11,  -2,  -5,   2,  14,   5,
-	-35,  -8,  11,   2,   8,  15,  -3,   1,
-	 -1, -18,  -9,  10, -15, -25, -31, -50,
-};
-
-int eg_queen_table[64] = {
-	 -9,  22,  22,  27,  27,  19,  10,  20,
-	-17,  20,  32,  41,  58,  25,  30,   0,
-	-20,   6,   9,  49,  47,  35,  19,   9,
-	  3,  22,  24,  45,  57,  40,  57,  36,
-	-18,  28,  19,  47,  31,  34,  39,  23,
-	-16, -27,  15,   6,   9,  17,  10,   5,
-	-22, -23, -30, -16, -16, -23, -36, -32,
-	-33, -28, -22, -43,  -5, -32, -20, -41,
-};
-
-int mg_king_table[64] = {
-	-65,  23,  16, -15, -56, -34,   2,  13,
-	 29,  -1, -20,  -7,  -8,  -4, -38, -29,
-	 -9,  24,   2, -16, -20,   6,  22, -22,
-	-17, -20, -12, -27, -30, -25, -14, -36,
-	-49,  -1, -27, -39, -46, -44, -33, -51,
-	-14, -14, -22, -46, -44, -30, -15, -27,
-	  1,   7,  -8, -64, -43, -16,   9,   8,
-	-15,  36,  12, -54,   8, -28,  24,  14,
-};
-
-int eg_king_table[64] = {
-	-74, -35, -18, -18, -11,  15,   4, -17,
-	-12,  17,  14,  17,  17,  38,  23,  11,
-	 10,  17,  23,  15,  20,  45,  44,  13,
-	 -8,  22,  24,  27,  26,  33,  26,   3,
-	-18,  -4,  21,  24,  27,  23,   9, -11,
-	-19,  -3,  11,  21,  23,  16,   7,  -9,
-	-27, -11,   4,  13,  14,   4,  -5, -17,
-	-53, -34, -21, -11, -28, -14, -24, -43
-};
-
-int* mg_table[PT_NB] = {
-	mg_pawn_table,
-	mg_knight_table,
-	mg_bishop_table,
-	mg_rook_table,
-	mg_queen_table,
-	mg_king_table
-};
-
-int* eg_table[PT_NB] = {
-	eg_pawn_table,
-	eg_knight_table,
-	eg_bishop_table,
-	eg_rook_table,
-	eg_queen_table,
-	eg_king_table
-};
-
-int mg_pst[16][64];
-int eg_pst[16][64];
-int mx_pst[16][64];
-
 void UciCommand(char* line);
 
+static inline void SSClear() { memset(stack, 0, sizeof(stack)); }
 static inline void TTClear() { memset(tt, 0, sizeof(tt)); }
-static inline void HHClear() { memset(hh, 0, sizeof(hh)); }
 static inline U64 GetTimeMs() { return (U64)GetTickCount64(); }
 static inline int MakePiece(int color, int pt) { return color | pt; }
 static inline int GetPieceColor(int piece) { return piece & COLOR_MASK; }
@@ -284,8 +134,8 @@ static inline int FileOf(int sq) { return sq % 8; }
 static inline int RankOf(int sq) { return sq / 8; }
 static inline char CFileOf(int sq) { return 'a' + FileOf(sq); }
 static inline char CRankOf(int sq) { return '1' + (7 - RankOf(sq)); }
-static inline int PieceTypeOnSquare(const Position* pos, int sq) { return GetPieceType(pos->board[sq]); }
-static inline int Equal(const Move lhs, const Move rhs) { return !memcmp(&rhs, &lhs, sizeof(Move)); }
+static inline int PieceTypeOn(const Position* pos, int sq) { return GetPieceType(pos->board[sq]); }
+static inline int Center(int rank, int file) { return -abs(rank * 2 - 7) / 2 - abs(file * 2 - 7) / 2; }
 
 static U64 Rand64() {
 	static U64 next = 1;
@@ -413,8 +263,8 @@ static int IsRepetition(Position* pos, U64 hash) {
 
 static int IsPseudolegalMove(const Position* pos, const Move move) {
 	Move moves[256];
-	const int inCheck = IsSquareAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
-	const int num_moves = MoveGen(pos, moves, 0, inCheck);
+	const int inCheck = IsAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
+	const int num_moves = GenerateMoves(pos, moves, 0, inCheck);
 	for (int i = 0; i < num_moves; ++i)
 		if (moves[i].from == move.from && moves[i].to == move.to)
 			return 1;
@@ -450,24 +300,24 @@ static int EvalPosition(Position* pos) {
 	int scoreMg = 0;
 	int scoreEg = 0;
 	int phase = 0;
-	int insufficent[2] = { 0 };
+	int insufficient[2] = { 0 };
 	for (int sq = 0; sq < SQ_NB; ++sq) {
 		int piece = pos->board[sq];
 		if (piece == EMPTY)continue;
 		int pt = GetPieceType(piece);
 		int color = GetPieceColor(piece);
 		int pc = piece & 0xf;
-		insufficent[color == BLACK] += insufVal[pt];
+		insufficient[color == BLACK] += insufVal[pt];
 		if (color == pos->color)
 			notOnlyPawns += phaseVal[pt];
 		phase += phaseVal[pt];
 		scoreMg += mg_pst[pc][sq];
 		scoreEg += eg_pst[pc][sq];
 	}
-	if (max(insufficent[0], insufficent[1]) < 3)
-		return 0;
 	phase = min(24, phase);
 	int score = (scoreMg * phase + scoreEg * (24 - phase)) / 24;
+	if (max(insufficient[0], insufficient[1]) < 5)return 0;
+	if (insufficient[score < 0] < 4)return 0;
 	score = (score * (100 - pos->move50)) / 100;
 	return pos->color == WHITE ? score : -score;
 }
@@ -586,7 +436,7 @@ static void GeneratePieceMoves(Position* pos, Move* const moveList, int* num_mov
 	}
 }
 
-static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures, int inCheck) {
+static int GenerateMoves(Position* pos, Move* const moveList, int onlyCaptures, int inCheck) {
 	int num_moves = 0;
 	for (int y = 0; y < 8; y++)
 		for (int x = 0; x < 8; x++) {
@@ -608,24 +458,24 @@ static int MoveGen(Position* pos, Move* const moveList, int onlyCaptures, int in
 			case WHITE_KING:
 				if (!onlyCaptures && !inCheck) {
 					if (pos->castle & CWK)
-						if (pos->board[f1] == EMPTY && pos->board[g1] == EMPTY && !IsSquareAttacked(pos, f1, BLACK))
-							AddMove(moveList, &num_moves, e1, g1, PT_NB);
+						if (pos->board[SQ_F1] == EMPTY && pos->board[SQ_G1] == EMPTY && !IsAttacked(pos, SQ_F1, BLACK))
+							AddMove(moveList, &num_moves, SQ_E1, SQ_G1, PT_NB);
 					if (pos->castle & CWQ)
-						if (pos->board[d1] == EMPTY && pos->board[b1] == EMPTY && pos->board[c1] == EMPTY && !IsSquareAttacked(pos, d1, BLACK))
-							AddMove(moveList, &num_moves, e1, c1, PT_NB);
+						if (pos->board[SQ_D1] == EMPTY && pos->board[SQ_B1] == EMPTY && pos->board[SQ_C1] == EMPTY && !IsAttacked(pos, SQ_D1, BLACK))
+							AddMove(moveList, &num_moves, SQ_E1, SQ_C1, PT_NB);
 				}
 				break;
 			case BLACK_KING:
 				if (!onlyCaptures && !inCheck) {
 					if (pos->castle & CBK)
-						if (pos->board[f8] == EMPTY && pos->board[g8] == EMPTY && !IsSquareAttacked(pos, f8, WHITE))
-							AddMove(moveList, &num_moves, e8, g8, PT_NB);
+						if (pos->board[SQ_F8] == EMPTY && pos->board[SQ_G8] == EMPTY && !IsAttacked(pos, SQ_F8, WHITE))
+							AddMove(moveList, &num_moves, SQ_E8, SQ_G8, PT_NB);
 					if (pos->castle & CBQ)
-						if (pos->board[d8] == EMPTY && pos->board[b8] == EMPTY && pos->board[c8] == EMPTY && !IsSquareAttacked(pos, d8, WHITE))
-							AddMove(moveList, &num_moves, e8, c8, PT_NB);
+						if (pos->board[SQ_D8] == EMPTY && pos->board[SQ_B8] == EMPTY && pos->board[SQ_C8] == EMPTY && !IsAttacked(pos, SQ_D8, WHITE))
+							AddMove(moveList, &num_moves, SQ_E8, SQ_C8, PT_NB);
 				}
 				break;
-			}//case
+			}//switch
 		}
 	return num_moves;
 }
@@ -670,11 +520,11 @@ static void PrintInfo(Position* pos, int depth, int score) {
 	printf(" time %lld", GetTimeMs() - info.timeStart);
 	printf(" nodes %lld", info.nodes);
 	printf(" hashfull %d pv", Permill());
-	PrintPv(pos, ss[0].move);
+	PrintPv(pos, stack[0]);
 	printf("\n");
 }
 
-static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, int doNull) {
+static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply) {
 	if (CheckUp())
 		return 0;
 	int  mate_value = MATE - ply;
@@ -684,11 +534,11 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		beta = mate_value - 1;
 	if (alpha >= beta)
 		return alpha;
-	int staticEval = ss[ply].score = EvalPosition(pos);
+	int staticEval = EvalPosition(pos);
 	if (ply >= MAX_PLY)
 		return staticEval;
 	int color = pos->color == BLACK;
-	const int inCheck = IsSquareAttacked(pos, pos->kingSq[color], pos->color ^ COLOR_MASK);
+	const int inCheck = IsAttacked(pos, pos->kingSq[color], pos->color ^ COLOR_MASK);
 	if (inCheck)
 		depth = max(1, depth + 1);
 	int inQuiescence = depth < 1;
@@ -707,53 +557,35 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	if (ttEntry->hash == hash) {
 		tt_move = ttEntry->move;
 		if (!inPv && ttEntry->depth >= depth) {
-			if (ttEntry->flag == EXACT)return ttEntry->score;
-			if (ttEntry->flag == LOWER && ttEntry->score <= alpha)return ttEntry->score;
-			if (ttEntry->flag == UPPER && ttEntry->score >= beta)return ttEntry->score;
+			if (ttEntry->flag == TT_EXACT)return ttEntry->score;
+			if (ttEntry->flag == TT_UPPER && ttEntry->score <= alpha)return ttEntry->score;
+			if (ttEntry->flag == TT_LOWER && ttEntry->score >= beta)return ttEntry->score;
 		}
 	}
 	else
 		depth -= depth > 3;
-	if (!inQuiescence && !inPv && !inCheck && ply && beta < MATE - MAX_PLY) {
-		// REVERSE FUTILITY PRUNING
-		if (depth < 8 && staticEval - 70 * depth >= beta)
-			return staticEval - 70 * depth;
-		// RAZORING
-		if (depth <= 3 && staticEval + 300 + 60 * depth < alpha)
-			depth--;
-		// NULL MOVE PRUNING
-		if (depth > 2 && staticEval >= beta && doNull && notOnlyPawns) {
-			Position npos = *pos;
-			npos.color ^= COLOR_MASK;
-			npos.ep = SQ_NB;
-			int r = depth >= 7 ? 4 : 3;
-			if (-SearchAlpha(&npos, -beta, -alpha, depth - r - 1, ply + 1, 0) >= beta)
-				return beta;
-		}
-	}
 	historyHash[historyCount++] = hash;
-	U8 tt_flag = LOWER;
-	int legalMoves = 0;
+	U8 tt_flag = TT_UPPER;
 	int score;
-	Move movesList[256];
-	int qNumber = 0;
-	Move qList[256];
-	S64 scoreList[256];
-	const int movesCount = MoveGen(pos, movesList, inQuiescence, inCheck);
+	int legalCount = 0;
+	int quietCount = 0;
+	Move movesList[MAX_MOVE];
+	Move quietList[MAX_MOVE];
+	S64 scoreList[MAX_MOVE];
+	const int movesCount = GenerateMoves(pos, movesList, inQuiescence, inCheck);
 	for (int j = 0; j < movesCount; ++j) {
 		Move m = movesList[j];
-		const int ptSou = PieceTypeOnSquare(pos, m.from);
-		int ptDes = m.promo == PT_NB ? PieceTypeOnSquare(pos, m.to) : m.promo;
-		if (Equal(m, tt_move))
+		int piece = pos->board[m.from];
+		const int ptSou = PieceTypeOn(pos, m.from);
+		int ptDes = m.promo == PT_NB ? PieceTypeOn(pos, m.to) : m.promo;
+		if (m.move == tt_move.move)
 			scoreList[j] = 1LL << 62;
 		else if (ptDes != PT_NB)
-			scoreList[j] = ((ptDes + 1) * (1LL << 54)) - ptSou;
-		else if (Equal(m, ss[ply].killer1))
-			scoreList[j] = 1LL << 50;
-		else if (Equal(m, ss[ply].killer2))
-			scoreList[j] = 1LL << 48;
-		else
-			scoreList[j] = hh[color][m.from][m.to];
+			scoreList[j] = (1LL << 54) + ptDes * 10 - ptSou;
+		else {
+			int pc = piece & 0xf;
+			scoreList[j] = mx_pst[pc][m.to]-mx_pst[pc][m.from];
+		}
 	}
 	for (int n = 0; n < movesCount; n++) {
 		int bstIdx = n;
@@ -766,44 +598,30 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		if (!legalMoves || depth < 4)
-			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
+		if (!legalCount || depth < 4)
+			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1);
 		else {
 			int r = !inPv;
-			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1, 1);
+			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1);
 			if (r && score > alpha)
-				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1, 1);
+				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1);
 			if (score > alpha && score < beta)
-				score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
+				score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1);
 		}
-		legalMoves++;
+		legalCount++;
 		if (info.stop)
 			break;
-		int isQuiet = move.promo == PT_NB && PieceTypeOnSquare(pos, move.to) == PT_NB && (PieceTypeOnSquare(pos, move.from) != PAWN || move.to != pos->ep);
+		int isQuiet = move.promo == PT_NB && PieceTypeOn(pos, move.to) == PT_NB && (PieceTypeOn(pos, move.from) != PAWN || move.to != pos->ep);
 		if (isQuiet)
-			qList[qNumber++] = move;
+			quietList[quietCount++] = move;
 		if (alpha < score) {
 			alpha = score;
-			ss[ply].move = move;
-			tt_flag = EXACT;
+			stack[ply] = move;
+			tt_flag = TT_EXACT;
 			if (!ply && info.post)
 				PrintInfo(pos, depth, score);
 			if (alpha >= beta) {
-				tt_flag = UPPER;
-				if (isQuiet) {
-					ss[ply].killer2 = ss[ply].killer1;
-					ss[ply].killer1 = move;
-				}
-				int bonus = depth * depth;
-				int h = hh[color][move.from][move.to];
-				h += bonus - h / 1024;
-				hh[color][move.from][move.to] = h;
-				for (int i = 0; i < qNumber; i++) {
-					Move* m = &qList[i];
-					int hm = hh[color][m->from][m->to];
-					hm -= bonus - hm / 1024;
-					hh[color][m->from][m->to] = hm;
-				}
+				tt_flag = TT_LOWER;
 				break;
 			}
 		}
@@ -811,17 +629,19 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	historyCount--;
 	if (info.stop)
 		return 0;
-	if (!legalMoves)
-		return inQuiescence ? alpha : inCheck ? ply - MATE : 0;
 	ttEntry->hash = hash;
-	ttEntry->move = ss[ply].move;
+	if(stack[ply].move)
+	ttEntry->move = stack[ply];
 	ttEntry->depth = max(0, depth);
 	ttEntry->score = alpha;
 	ttEntry->flag = tt_flag;
+	if (!legalCount)
+		return inQuiescence ? alpha : inCheck ? ply - MATE : 0;
 	return alpha;
 }
 
 static void SearchIteratively(Position* pos) {
+	SSClear();
 	TTClear();
 	int score = 0;
 	int alpha = -MATE;
@@ -833,7 +653,7 @@ static void SearchIteratively(Position* pos) {
 				alpha = score - aspL;
 				beta = score + aspH;
 			}
-			score = SearchAlpha(pos, alpha, beta, depth, 0, 0);
+			score = SearchAlpha(pos, alpha, beta, depth, 0);
 			if (score <= alpha) {
 				alpha -= aspL;
 				aspL *= 2;
@@ -850,10 +670,8 @@ static void SearchIteratively(Position* pos) {
 		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2)
 			break;
 	}
-	char* uci = MoveToUci(ss[0].move);
 	if (info.post)
-		printf("bestmove %s\n", uci);
-	fflush(stdout);
+		printf("bestmove %s\n", MoveToUci(stack[0]));
 }
 
 static int GetSliderPiece(Position* pos, int x, int y, D2 dir) {
@@ -866,7 +684,7 @@ static int GetSliderPiece(Position* pos, int x, int y, D2 dir) {
 	return EMPTY;
 }
 
-static int IsSquareAttacked(Position* pos, int sq, int byColor) {
+static int IsAttacked(Position* pos, int sq, int byColor) {
 	int sq2;
 	int fx = FileOf(sq);
 	int fy = RankOf(sq);
@@ -908,20 +726,20 @@ static int MakeMove(Position* pos, const Move* move) {
 	int piece = pos->board[move->from];
 	if (piece == WHITE_KING) {
 		pos->kingSq[0] = move->to;
-		if (move->from == e1) {
-			if (move->to == g1)
-				MovePiece(pos, h1, f1);
-			else if (move->to == c1)
-				MovePiece(pos, a1, d1);
+		if (move->from == SQ_E1) {
+			if (move->to == SQ_G1)
+				MovePiece(pos, SQ_H1, SQ_F1);
+			else if (move->to == SQ_C1)
+				MovePiece(pos, SQ_A1, SQ_D1);
 		}
 	}
 	else if (piece == BLACK_KING) {
 		pos->kingSq[1] = move->to;
-		if (move->from == e8) {
-			if (move->to == g8)
-				MovePiece(pos, h8, f8);
-			else if (move->to == c8)
-				MovePiece(pos, a8, d8);
+		if (move->from == SQ_E8) {
+			if (move->to == SQ_G8)
+				MovePiece(pos, SQ_H8, SQ_F8);
+			else if (move->to == SQ_C8)
+				MovePiece(pos, SQ_A8, SQ_D8);
 		}
 	}
 	int pt = GetPieceType(piece);
@@ -937,7 +755,7 @@ static int MakeMove(Position* pos, const Move* move) {
 		pos->board[move->to] = MakePiece(pos->color, move->promo);
 	pos->castle &= boardCastle[move->from] & boardCastle[move->to];
 	pos->color ^= COLOR_MASK;
-	return !IsSquareAttacked(pos, pos->kingSq[pos->color == WHITE], pos->color);
+	return !IsAttacked(pos, pos->kingSq[pos->color == WHITE], pos->color);
 }
 
 static int ShrinkNumber(U64 n) {
@@ -980,8 +798,8 @@ static void ResetInfo() {
 
 static inline void PerftDriver(Position* pos, int depth) {
 	Move moves[256];
-	const int inCheck = IsSquareAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
-	const int num_moves = MoveGen(pos, moves, 0, inCheck);
+	const int inCheck = IsAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
+	const int num_moves = GenerateMoves(pos, moves, 0, inCheck);
 	for (int n = 0; n < num_moves; n++) {
 		Position npos = *pos;
 		if (!MakeMove(&npos, &moves[n]))
@@ -1000,6 +818,8 @@ static void UciPerformance(Position* pos) {
 	info.depthLimit = 0;
 	U64 elapsed = 0;
 	while (elapsed < 4000) {
+		info.nodes = 0;
+		info.timeStart = GetTimeMs();
 		PerftDriver(pos, info.depthLimit++);
 		elapsed = GetTimeMs() - info.timeStart;
 		printf(" %2d. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
@@ -1014,7 +834,7 @@ static void UciBench(Position* pos) {
 	info.depthLimit = 0;
 	info.post = FALSE;
 	U64 elapsed = 0;
-	while (elapsed < 4000) {
+	while (elapsed < 8000) {
 		++info.depthLimit;
 		SearchIteratively(pos);
 		elapsed = GetTimeMs() - info.timeStart;
@@ -1023,7 +843,7 @@ static void UciBench(Position* pos) {
 	PrintSummary(elapsed, info.nodes);
 }
 
-static void ParsePosition(char* ptr) {
+static void ParsePosition(Position* pos, char* ptr) {
 	char token[80], fen[80];
 	ptr = ParseToken(ptr, token);
 	if (strcmp(token, "fen") == 0) {
@@ -1035,11 +855,11 @@ static void ParsePosition(char* ptr) {
 			strcat(fen, token);
 			strcat(fen, " ");
 		}
-		SetFen(&pos, fen);
+		SetFen(pos, fen);
 	}
 	else {
 		ptr = ParseToken(ptr, token);
-		SetFen(&pos, START_FEN);
+		SetFen(pos, START_FEN);
 	}
 	historyCount = 0;
 	if (strcmp(token, "moves") == 0)
@@ -1048,14 +868,14 @@ static void ParsePosition(char* ptr) {
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token);
-			historyHash[historyCount++] = GetHash(&pos);
-			MakeMove(&pos, &m);
-			if (!pos.move50)
+			historyHash[historyCount++] = GetHash(pos);
+			MakeMove(pos, &m);
+			if (!pos->move50)
 				historyCount = 0;
 		}
 }
 
-static void ParseGo(char* command) {
+static void ParseGo(Position* pos, char* command) {
 	ResetInfo();
 	int wtime = 0;
 	int btime = 0;
@@ -1079,60 +899,73 @@ static void ParseGo(char* command) {
 		info.depthLimit = atoi(argument + 6);
 	if (argument = strstr(command, "nodes"))
 		info.nodesLimit = atoi(argument + 5);
-	int time = pos.color == WHITE ? wtime : btime;
-	int inc = pos.color == WHITE ? winc : binc;
+	int time = pos->color == WHITE ? wtime : btime;
+	int inc = pos->color == WHITE ? winc : binc;
 	if (time)
 		info.timeLimit = max(1, min(time / movestogo + inc, time / 2));
-	SearchIteratively(&pos);
+	SearchIteratively(pos);
 }
 
 void UciCommand(char* line) {
-	if (strncmp(line, "ucinewgame", 10) == 0)HHClear();
-	else if (!strncmp(line, "uci", 3)) {
-		printf("id name %s\nuciok\n", NAME);
-		fflush(stdout);
-	}
-	else if (!strncmp(line, "isready", 7)) {
-		printf("readyok\n");
-		fflush(stdout);
-	}
-	else if (!strncmp(line, "go", 2))ParseGo(line + 2);
-	else if (!strncmp(line, "position", 8))ParsePosition(line + 8);
-	else if (!strncmp(line, "print", 5))PrintBoard(&pos);
-	else if (!strncmp(line, "perft", 5))UciPerformance(&pos);
-	else if (!strncmp(line, "bench", 5))UciBench(&pos);
-	else if (!strncmp(line, "stop", 4))info.stop = TRUE;
-	else if (!strncmp(line, "exit", 4))exit(0);
+	char command[0xff] = { 0 };
+	sscanf(line, "%s", command);
+	if (!strcmp(command, "uci"))printf("id name %s\nuciok\n", NAME);
+	else if (!strcmp(command, "isready"))printf("readyok\n");
+	else if (!strcmp(command, "go"))ParseGo(&pos, line + 2);
+	else if (!strcmp(command, "position"))ParsePosition(&pos, line + 8);
+	else if (!strcmp(command, "print"))PrintBoard(&pos);
+	else if (!strcmp(command, "perft"))UciPerformance(&pos);
+	else if (!strcmp(command, "bench"))UciBench(&pos);
+	else if (!strcmp(command, "stop"))info.stop = TRUE;
+	else if (!strcmp(command, "quit"))exit(0);
 }
 
-static void UciLoop() {
-	//UciCommand("position fen rnbqkbnr/1ppppppp/8/p7/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-	//UciCommand("print");
-	char line[4000];
-	while (fgets(line, sizeof(line), stdin))
-		UciCommand(line);
-}
-
-static void Init() {
+static void InitHash() {
 	for (int i = 0; i < KEYS_COUNT; ++i)
 		keys[i] = Rand64();
-	for (int pt = PAWN; pt <= KING; pt++) {
-		for (int sq = 0; sq < 64; sq++) {
-			int mg = mg_material[pt] + mg_table[pt][sq];
-			int eg = eg_material[pt] + eg_table[pt][sq];
-			mg_pst[pt + WHITE][sq] = mg;
-			mg_pst[pt][FLIP(sq)] = -mg;
-			eg_pst[pt + WHITE][sq] = eg;
-			eg_pst[pt][FLIP(sq)] = -eg;
-			mx_pst[pt + WHITE][sq] = max(mg, eg);
-			mx_pst[pt][FLIP(sq)] = max(mg, eg);
+}
+
+static void InitPst() {
+	for (int pt = PAWN; pt <= KING; pt++)
+		for (int sq = 0; sq < SQ_NB; sq++) {
+			int mg = mg_material[pt];
+			int eg = eg_material[pt];
+			int file = FileOf(sq);
+			int rank = RankOf(sq);
+			int center = Center(rank, file);
+			switch (pt) {
+			case PAWN:
+				mg += file == FILE_D || file == FILE_E ? rank : 0;
+				eg += rank * 2;
+				break;
+			case KNIGHT:
+			case BISHOP:
+			case ROOK:
+			case QUEEN:
+				mg += center;
+				eg += center;
+				break;
+			case KING:
+				mg -= center;
+				eg += center;
+				break;
+			}
+			mg_pst[MakePiece(WHITE, pt) & 0xf][FLIP_SQ(sq)] = mg;
+			eg_pst[MakePiece(WHITE, pt) & 0xf][FLIP_SQ(sq)] = eg;
+			mx_pst[MakePiece(WHITE, pt) & 0xf][FLIP_SQ(sq)] = max(mg,eg);
+			mg_pst[MakePiece(BLACK, pt) & 0xf][sq] = -mg;
+			eg_pst[MakePiece(BLACK, pt) & 0xf][sq] = -eg;
+			mx_pst[MakePiece(BLACK, pt) & 0xf][sq] = max(mg,eg);
 		}
-	}
 }
 
 int main(const int argc, const char** argv) {
-	Init();
+	InitHash();
+	InitPst();
+	setbuf(stdout, NULL);
 	printf("%s %s\n", NAME, VERSION);
 	SetFen(&pos, START_FEN);
-	UciLoop();
+	char line[4000];
+	while (fgets(line, sizeof(line), stdin))
+		UciCommand(line);
 }
